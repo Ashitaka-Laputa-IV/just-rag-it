@@ -19,7 +19,7 @@ def collect_urls() -> list[str]:
 
     urls = set()
     for match in PAGE_PATTERN.findall(index_text):
-        url = match.split("#", 1)[0].removesuffix(".md")
+        url = match.split("#", 1)[0]
         if any(part in url for part in EXCLUDE):
             continue
         urls.add(url)
@@ -29,7 +29,7 @@ def collect_urls() -> list[str]:
 def download(url: str) -> int:
     """下载单个页面（markdown），路径镜像官方 URL 结构，返回字节数。"""
     rel = url.replace(BASE, "")
-    dest = OUT_DIR / f"{rel}.md"
+    dest = OUT_DIR / (rel if rel.endswith(".md") else f"{rel}.md")
     dest.parent.mkdir(parents=True, exist_ok=True)
     with urllib.request.urlopen(url, timeout=30) as resp:
         content = resp.read()
