@@ -1,0 +1,17 @@
+# 文档切分配置。修改后重新执行 `uv run python -m just_rag_it.chunk_docs` 即可。
+# 路径相对于仓库根目录。
+
+[input]
+dir = "data/langchain-docs"
+glob = "**/*.md"
+docs_base = "https://docs.langchain.com/"
+
+[output]
+dir = "data/chunks"
+file = "langchain-docs.jsonl"
+
+[chunker]
+type = "recursive"
+tokenizer = "gpt2"
+chunk_size = 512
+min_characters_per_chunk = 24

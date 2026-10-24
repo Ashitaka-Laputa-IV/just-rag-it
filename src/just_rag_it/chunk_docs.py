@@ -1,19 +1,34 @@
+import argparse
 import json
 import pathlib
 import re
+import tomllib
 
-from chonkie import RecursiveChunker
-from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
-from rich.table import Table
+from chonkie import RecursiveChunker, TokenChunker
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
-IN_DIR = ROOT / "data" / "langchain-docs"
-OUT_FILE = ROOT / "data" / "chunks" / "langchain-docs.jsonl"
-DOCS_BASE = "https://docs.langchain.com/"
+DEFAULT_CONFIG = ROOT / "config" / "chunking.toml"
 TITLE_PATTERN = re.compile(r"^#+\s+(.+)$", re.MULTILINE)
+CHUNKERS = {"recursive": RecursiveChunker, "token": TokenChunker}
 
-console = Console()
+
+def resolve(path: str) -> pathlib.Path:
+    """配置里的相对路径一律相对仓库根目录。"""
+    candidate = pathlib.Path(path)
+    return candidate if candidate.is_absolute() else ROOT / candidate
+
+
+def load_config(path: pathlib.Path) -> dict:
+    with path.open("rb") as file:
+        return tomllib.load(file)
+
+
+def build_chunker(config: dict):
+    params = dict(config)
+    name = params.pop("type", "recursive")
+    if name not in CHUNKERS:
+        raise SystemExit(f"未知的 chunker 类型：{name}，可选：{', '.join(CHUNKERS)}")
+    return CHUNKERS[name](**params)
 
 
 def doc_title(text: str, fallback: str) -> str:
@@ -23,36 +38,41 @@ def doc_title(text: str, fallback: str) -> str:
 
 
 def main() -> None:
-    chunker = RecursiveChunker(tokenizer="gpt2", chunk_size=512)
-    files = sorted(IN_DIR.rglob("*.md"))
-    if not files:
-        console.print(f"[red]没有找到输入文档：{IN_DIR}（先跑 download_example_docs）")
-        return
+    parser = argparse.ArgumentParser(description="按配置切分已下载的 markdown 文档")
+    parser.add_argument(
+        "--config",
+        type=pathlib.Path,
+        default=DEFAULT_CONFIG,
+        help=f"配置文件路径（默认 {DEFAULT_CONFIG.relative_to(ROOT)}）",
+    )
+    args = parser.parse_args()
 
-    OUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    config = load_config(args.config)
+    chunker = build_chunker(config.get("chunker", {}))
+
+    in_dir = resolve(config["input"]["dir"])
+    docs_base = config["input"].get("docs_base", "")
+    out_file = resolve(config["output"]["dir"]) / config["output"]["file"]
+
+    files = sorted(in_dir.glob(config["input"]["glob"]))
+    if not files:
+        raise SystemExit(f"没有找到输入文档：{in_dir}（先跑 download_example_docs）")
+
+    out_file.parent.mkdir(parents=True, exist_ok=True)
     total_chunks = 0
     total_tokens = 0
 
-    with OUT_FILE.open("w", encoding="utf-8") as out, Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("{task.completed}/{task.total} 文件"),
-        TimeElapsedColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task("chunking", total=len(files))
+    with out_file.open("w", encoding="utf-8") as out:
         for path in files:
-            source = path.relative_to(IN_DIR).as_posix()
+            source = path.relative_to(in_dir).as_posix()
             text = path.read_text(encoding="utf-8")
-            url = DOCS_BASE + source.removesuffix(".md")
             title = doc_title(text, path.stem)
 
             for index, chunk in enumerate(chunker.chunk(text)):
                 record = {
                     "id": f"{source}#{index}",
                     "source": source,
-                    "url": url,
+                    "url": docs_base + source.removesuffix(".md"),
                     "title": title,
                     "chunk_index": index,
                     "start_index": chunk.start_index,
@@ -64,17 +84,11 @@ def main() -> None:
                 total_chunks += 1
                 total_tokens += chunk.token_count
 
-            progress.advance(task)
-
-    table = Table(title="chunk 结果")
-    table.add_column("项目")
-    table.add_column("值", justify="right")
-    table.add_row("文档数", str(len(files)))
-    table.add_row("chunk 数", str(total_chunks))
-    table.add_row("平均每篇", f"{total_chunks / len(files):.1f}")
-    table.add_row("平均 token", f"{total_tokens / total_chunks:.1f}" if total_chunks else "0")
-    table.add_row("输出", str(OUT_FILE))
-    console.print(table)
+    print(f"文档 {len(files)} 篇")
+    print(f"chunk {total_chunks} 个（平均每篇 {total_chunks / len(files):.1f}）")
+    if total_chunks:
+        print(f"平均 token {total_tokens / total_chunks:.1f}")
+    print(f"输出 {out_file}")
 
 
 if __name__ == "__main__":
